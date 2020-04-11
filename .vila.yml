@@ -1,4 +1,0 @@
-type: maven
-goals: ['clean', 'package']
-artifacts:
-  - files: /target/Autocrafter*.jar

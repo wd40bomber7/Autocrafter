@@ -1,4 +1,0 @@
-main: com.norcode.bukkit.autocrafter.Autocrafter
-version: ${project.version}
-authors: [metalhedd]
-name: ${project.name}

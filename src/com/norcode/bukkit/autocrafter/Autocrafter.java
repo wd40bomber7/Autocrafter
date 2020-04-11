@@ -1,7 +1,5 @@
 package com.norcode.bukkit.autocrafter;
 
-import net.gravitydevelopment.updater.Updater;
-
 import org.bukkit.ChatColor;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
@@ -14,6 +12,7 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Cancellable;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockDispenseEvent;
@@ -26,6 +25,8 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.Recipe;
 import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.inventory.ShapelessRecipe;
+import org.bukkit.inventory.meta.Damageable;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.permissions.Permission;
 import org.bukkit.permissions.PermissionDefault;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -35,6 +36,7 @@ import com.norcode.bukkit.autocrafter.CraftAttempt;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 
 public class Autocrafter extends JavaPlugin implements Listener {
@@ -48,11 +50,13 @@ public class Autocrafter extends JavaPlugin implements Listener {
     private String noPermissionMsg;
     private List<String> worldList = new ArrayList<String>();
     private Permission wildcardPerm = null;
-    private Updater updater;
-	private boolean debug = false;
+	private static boolean debug = false;
+	private static Autocrafter instance;
 
     @Override
     public void onEnable() {
+    	instance = this;
+    	
         saveDefaultConfig();
         getConfig().options().copyDefaults(true);
         saveConfig();
@@ -60,31 +64,6 @@ public class Autocrafter extends JavaPlugin implements Listener {
         getServer().getPluginManager().registerEvents(this, this);
     }
 
-    @EventHandler(ignoreCancelled=true)
-    public void onPlayerLogin(PlayerLoginEvent event) {
-        final String playerName = event.getPlayer().getName();
-        if (updater == null) return;
-        if (event.getPlayer().hasPermission("autocrafter.admin")) {
-            getServer().getScheduler().runTaskLaterAsynchronously(this, new Runnable() {
-                public void run() {
-                    Player player = getServer().getPlayer(playerName);
-                    if (player != null && player.isOnline()) {
-                        String autoUpdate = getConfig().getString("auto-update").toLowerCase();
-                        if (!autoUpdate.equals("false")) {
-                            /*Updater.UpdateResult result = updater.getResult();
-                            switch (result) {
-                            case SUCCESS:
-                                player.sendMessage(ChatColor.GOLD + "[AutoCrafter] " + ChatColor.WHITE + "A new update has been downloaded and is will take effect when the server restarts.");
-                                break;
-                            case UPDATE_AVAILABLE:
-                                player.sendMessage(ChatColor.GOLD + "[AutoCrafter] " + ChatColor.WHITE + "A new update is available at: http://dev.bukkit.org/server-mods/autocrafter/");
-                            }*/
-                        }
-                    }
-                }
-            }, 20);
-        }
-    }
     public void loadConfig() {
 		debug = getConfig().getBoolean("debug", false);
 		debug("Loading Autocrafter Config...");
@@ -141,6 +120,8 @@ public class Autocrafter extends JavaPlugin implements Listener {
 		debug(" ... recalculating permissibles.");
 		wildcardPerm.recalculatePermissibles();
 		debug(" ... Done.");
+		
+
     }
 
     public void printInventoryContents(Inventory inv) {
@@ -212,143 +193,138 @@ public class Autocrafter extends JavaPlugin implements Listener {
 
     @EventHandler(ignoreCancelled=true)
     public void onDropperMove(InventoryMoveItemEvent event) {
-        if (event.getSource().getHolder() instanceof Dropper) {
-        	debug("Dropper move?");
-			if (!sourceIsInitiator(event)) {
-				return;
-			}
-            final Dropper dropper = ((Dropper) event.getSource().getHolder());
-            if (!enabledInWorld(dropper.getWorld())) return;
-            ItemFrame frame = getAttachedFrame(dropper.getBlock());
-            if (frame == null) {
-        		return;
-            }
-            if (!recipeAllowed(getFrameItem(frame))) return;
-            ItemStack result = null;
-            Recipe recipe = null;
-            if (frame != null && frame.getItem() != null && !frame.getItem().getType().equals(Material.AIR)) {
-                if (event.getItem().equals(getFrameItem(frame))) {
-                    return;
-                }
-                debug("Attempting to craft " + getFrameItem(frame));
-                boolean crafted = false;
-                ItemStack[] ingredients = null;
-                for (Recipe r: getServer().getRecipesFor(getFrameItem(frame))) {
-                    debug("Checking recipe: " + r);
-                    if (r instanceof ShapedRecipe || r instanceof ShapelessRecipe) {
-                        ingredients = CraftAttempt.getIngredients(r).toArray(new ItemStack[0]);
-                        Inventory clone = CraftAttempt.cloneInventory(this, dropper.getInventory());
-                        // for this even, the item NOT already been removed, so we don't need to re-add it to the
-						// cloned inventory.
-                        //clone.addItem(event.getItem());
-                        crafted = true;
-                        for (ItemStack ing: ingredients) {
-                            if (!CraftAttempt.removeItem(clone, ing.getType(), ing.getData().getData(), ing.getAmount())) {
-                                debug("Failed to find" + ing + " in inventory");
-                                crafted = false;
-                                break;
-                            }
-                        }
-                        if (crafted) {
-                            recipe = r;
-                            result = r.getResult().clone();
-                            break;
-                        }
-                    }
-                }
-                if (!crafted) {
-                    event.setCancelled(true);
-                } else {
-                    event.setItem(result);
-                    final Recipe finalRecipe = recipe;
-                    getServer().getScheduler().runTaskLater(this,  new Runnable() {
-                        public void run () {
-                            for (ItemStack ing: CraftAttempt.getIngredients(finalRecipe)) {
-                                CraftAttempt.removeItem(dropper.getInventory(), ing.getType(), ing.getData().getData(), ing.getAmount());
-                                if (filledBuckets.contains(ing.getType())) {
-                                    dropper.getInventory().addItem(new ItemStack(Material.BUCKET));
-                                }
-                            }
-                        }
-                    }, 0);
-                }
-            }
+    	InventoryHolder holder = event.getSource().getHolder();
+        if (holder instanceof Dropper) {
+    		if (!sourceIsInitiator(event)) {
+    			return;
+    		}
+        	
+        	ItemStack newResult = ExecuteAutomaticCraft((Dropper)holder, null, event);
+        	if (newResult != null) {
+        		event.setItem(newResult);
+        	}
         }
     }
 
-    private void debug(String s) {
+    public static void debug(String s) {
         if (debug) {
-            getLogger().info(s);
+            instance.getLogger().info(s);
         }
     }
 
     private ItemStack getFrameItem(ItemFrame frame) {
 		ItemStack stack = frame.getItem();
-		short max = stack.getType().getMaxDurability();
-		if (max > 0 && stack.getDurability() != 0) {
-		    stack = stack.clone();
-		    stack.setDurability((short) 0);
+		
+		if (stack == null) {
+			debug("  Null item in frame.");
+			return null;
 		}
+		
+		if (!recipeAllowed(stack)) {
+			debug("  Recipe was not allowed.");
+			return null;
+		}
+		
+		if (stack.getType().isAir()) {
+			debug("  Item in frame is air");
+			return null;	
+		}
+		
+		if (stack.hasItemMeta()) {
+			ItemMeta meta = stack.getItemMeta();
+			if (meta instanceof Damageable) {
+				((Damageable)meta).setDamage(0);
+				stack = stack.clone();
+				stack.setItemMeta(meta);
+			}
+		}
+		
 		return stack;
     }
 
     @EventHandler(ignoreCancelled=true)
     public void onDropperFire(BlockDispenseEvent event) {
-        if (event.getBlock().getType().equals(Material.DROPPER)) {
-        	debug("A dropper fired");
-            final Dropper dropper = ((Dropper) event.getBlock().getState());
-            if (!enabledInWorld(dropper.getWorld())) return;
-            ItemFrame frame = getAttachedFrame(event.getBlock());
-            if (frame == null) return;
-            if (!recipeAllowed(getFrameItem(frame))) return;
-            ItemStack result = null;
-            Recipe recipe = null;
-            if (frame != null && frame.getItem() != null && !frame.getItem().getType().equals(Material.AIR)) {
-                if (event.getItem().equals(getFrameItem(frame))) {
-                    return;
-                }
-                debug("Attempting to craft " + getFrameItem(frame));
-                boolean crafted = false;
-                ItemStack[] ingredients = null;
-                for (Recipe r: getServer().getRecipesFor(getFrameItem(frame))) {
-                    debug("Checking recipe: " + r);
-                    if (r instanceof ShapedRecipe || r instanceof ShapelessRecipe) {
-                        ingredients = CraftAttempt.getIngredients(r).toArray(new ItemStack[0]);
-                        Inventory clone = CraftAttempt.cloneInventory(this, dropper.getInventory());
-                        clone.addItem(event.getItem());
-                        crafted = true;
-                        for (ItemStack ing: ingredients) {
-                            if (!CraftAttempt.removeItem(clone, ing.getType(), ing.getData().getData(), ing.getAmount())) {
-                                debug("Failed to find" + ing + " in inventory");
+    	Block dropperBlock = event.getBlock();
+        if (!dropperBlock.getType().equals(Material.DROPPER)) {
+        	return;
+        }
+        
+        final Dropper dropper = ((Dropper) dropperBlock.getState());
+    	ItemStack newResult = ExecuteAutomaticCraft(dropper, event.getItem(), event);
+    	if (newResult != null) {
+    		event.setItem(newResult);
+    	}
+    }
+    
+    public ItemStack ExecuteAutomaticCraft(Dropper dropper, ItemStack dropped, Cancellable event) {
+    	debug("A dropper fired");
+        if (!enabledInWorld(dropper.getWorld()))  {
+        	debug("  Dropper was in a disabled world");
+        	return null;
+        }
+        
+        ItemFrame frame = getAttachedFrame(dropper.getBlock());
+        if (frame == null) {
+        	debug("  Dropper did not have a valid frame");
+        	return null;
+        }
+        
+        ItemStack frameItem = getFrameItem(frame);
+        if (frameItem == null) {
+        	debug("  Frame did not have a valid crafting item (may be empty, air, or not allowed)");
+        	return null;
+        }
+        
+        debug("  Final frame check " + (frame != null) + " " + (frame.getItem() != null) + " " + !frame.getItem().getType().equals(Material.AIR));
+        ItemStack result = null;
+        Recipe recipe = null;
 
-                                crafted = false;
-                                break;
-                            }
-                        }
-                        if (crafted) {
-                            recipe = r;
-                            result = r.getResult().clone();
-                            break;
+        debug("  Attempting to craft " + frameItem);
+        boolean crafted = false;
+        ItemStack[] ingredients = null;
+        for (Recipe r: getServer().getRecipesFor(frameItem)) {
+            debug("  Checking recipe: " + r);
+            if (r instanceof ShapedRecipe || r instanceof ShapelessRecipe) {
+                ingredients = CraftAttempt.getIngredients(r).toArray(new ItemStack[0]);
+                Inventory clone = CraftAttempt.cloneInventory(this, dropper.getInventory());
+                
+                if (dropped != null) {
+                	clone.addItem(dropped);
+                }
+                
+                crafted = true;
+                for (ItemStack ing: ingredients) {
+                	debug("  Recipe consuming " + ing.getType().name() + " in quantity " + ing.getAmount());
+                    if (!CraftAttempt.removeItem(clone, ing)) {
+                        debug("  Failed to find" + ing + " in inventory");
+
+                        crafted = false;
+                        break;
+                    }
+                }
+                if (crafted) {
+                    recipe = r;
+                    result = r.getResult().clone();
+                    break;
+                }
+            }
+        }
+        if (!crafted) {
+            event.setCancelled(true);
+            return null;
+        } else {
+            final Recipe finalRecipe = recipe;
+            getServer().getScheduler().runTaskLater(this,  new Runnable() {
+                public void run () {
+                    for (ItemStack ing: CraftAttempt.getIngredients(finalRecipe)) {
+                        CraftAttempt.removeItem(dropper.getInventory(), ing);
+                        if (filledBuckets.contains(ing.getType())) {
+                            dropper.getInventory().addItem(new ItemStack(Material.BUCKET));
                         }
                     }
                 }
-                if (!crafted) {
-                    event.setCancelled(true);
-                } else {
-                    event.setItem(result);
-                    final Recipe finalRecipe = recipe;
-                    getServer().getScheduler().runTaskLater(this,  new Runnable() {
-                        public void run () {
-                            for (ItemStack ing: CraftAttempt.getIngredients(finalRecipe)) {
-                                CraftAttempt.removeItem(dropper.getInventory(), ing.getType(), ing.getData().getData(), ing.getAmount());
-                                if (filledBuckets.contains(ing.getType())) {
-                                    dropper.getInventory().addItem(new ItemStack(Material.BUCKET));
-                                }
-                            }
-                        }
-                    }, 0);
-                }
-            }
+            }, 0);
+            return result;
         }
     }
 
